@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ResearchAI — Document Q&A Assistant</title>
+  <meta name="description" content="Upload research papers and ask natural language questions. Get AI-powered answers with source citations using RAG technology." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Animated background -->
+  <div class="bg-orbs" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <!-- Header -->
+  <header class="header" role="banner">
+    <div class="header-inner">
+      <div class="logo">
+        <div class="logo-icon" aria-hidden="true">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+            <path d="M2 17l10 5 10-5"/>
+            <path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <span class="logo-text">ResearchAI</span>
+      </div>
+      <div class="header-status" id="headerStatus">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Loading model...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main layout -->
+  <main class="app-layout" role="main">
+
+    <!-- Sidebar: Upload + Document Library -->
+    <aside class="sidebar" role="complementary" aria-label="Document library">
+      <section class="upload-section" aria-labelledby="uploadTitle">
+        <h2 class="section-title" id="uploadTitle">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          Upload Document
+        </h2>
+
+        <div
+          class="upload-zone"
+          id="uploadZone"
+          role="button"
+          tabindex="0"
+          aria-label="Upload PDF - drag and drop or click to browse"
+          aria-describedby="uploadHint"
+        >
+          <div class="upload-icon-wrap" aria-hidden="true">
+            <svg class="upload-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="12" y1="18" x2="12" y2="12"/>
+              <line x1="9" y1="15" x2="15" y2="15"/>
+            </svg>
+          </div>
+          <p class="upload-label">Drop PDF here</p>
+          <p class="upload-sub" id="uploadHint">or click to browse</p>
+          <input type="file" id="fileInput" accept=".pdf" class="file-input" aria-hidden="true" tabindex="-1" />
+        </div>
+
+        <!-- Upload progress -->
+        <div class="upload-progress-wrap hidden" id="uploadProgressWrap" aria-live="polite">
+          <div class="upload-progress-bar">
+            <div class="upload-progress-fill" id="uploadProgressFill"></div>
+          </div>
+          <p class="upload-progress-text" id="uploadProgressText">Processing...</p>
+        </div>
+
+        <!-- Upload result toast -->
+        <div class="upload-toast hidden" id="uploadToast" role="alert" aria-live="polite"></div>
+      </section>
+
+      <!-- Document library -->
+      <section class="library-section" aria-labelledby="libraryTitle">
+        <h2 class="section-title" id="libraryTitle">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          Documents
+          <span class="doc-count badge" id="docCount">0</span>
+        </h2>
+        <ul class="doc-list" id="docList" role="list" aria-label="Uploaded documents">
+          <li class="doc-empty" id="docEmpty">No documents uploaded yet.</li>
+        </ul>
+      </section>
+    </aside>
+
+    <!-- Chat area -->
+    <section class="chat-section" aria-labelledby="chatTitle">
+      <h1 class="sr-only" id="chatTitle">Research Q&A Chat</h1>
+
+      <!-- Messages -->
+      <div class="messages-wrap" id="messagesWrap" role="log" aria-live="polite" aria-label="Conversation">
+        <!-- Welcome state -->
+        <div class="welcome-state" id="welcomeState">
+          <div class="welcome-icon" aria-hidden="true">
+            <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+          </div>
+          <h2 class="welcome-title">Ask Your Documents</h2>
+          <p class="welcome-sub">Upload a research PDF and start asking questions. Answers are grounded in your documents with citations.</p>
+          <div class="example-chips" role="list" aria-label="Example questions">
+            <button class="chip" role="listitem" data-query="What is the main contribution of this paper?">What is the main contribution?</button>
+            <button class="chip" role="listitem" data-query="What methodology was used in this research?">What methodology was used?</button>
+            <button class="chip" role="listitem" data-query="What are the key findings and results?">What are the key findings?</button>
+            <button class="chip" role="listitem" data-query="What are the limitations of this work?">What are the limitations?</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input bar -->
+      <div class="input-bar" role="form" aria-label="Ask a question">
+        <div class="input-wrap">
+          <textarea
+            id="questionInput"
+            class="question-input"
+            placeholder="Ask a question about your documents..."
+            rows="1"
+            aria-label="Your question"
+            maxlength="1000"
+          ></textarea>
+          <button
+            id="sendBtn"
+            class="send-btn"
+            aria-label="Send question"
+            title="Send"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+        <p class="input-hint">Answers are grounded in uploaded documents only.</p>
+      </div>
+    </section>
+
+    <!-- Citations panel -->
+    <aside class="citations-panel" id="citationsPanel" role="complementary" aria-label="Source citations" aria-hidden="true">
+      <div class="citations-header">
+        <h2 class="section-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M9 11l3 3L22 4"/>
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+          Sources
+        </h2>
+        <button class="close-panel-btn" id="closePanelBtn" aria-label="Close citations panel">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="citations-list" id="citationsList" role="list"></div>
+    </aside>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
