@@ -21,7 +21,7 @@ def get_gemini_client() -> genai.Client:
     global _client
     if _client is None:
         api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key or api_key == "AIzaSyBHAkmbD_q1MFVBbTtwUBdqFlkOg-PrQA0":
+        if not api_key:
             raise ValueError(
                 "GOOGLE_API_KEY is not set. Please add it to your .env file."
             )
