@@ -135,4 +135,29 @@ def get_document_count() -> int:
     except Exception:
         return 0
 
-#so it is to return all the nearest chunks with its metadata using similarity_search()
+def get_all_chunks() -> List[Dict[str, Any]]:
+    """
+    Retrieve all chunk payloads from Qdrant.
+    """
+
+    ensure_collection()
+    client = get_client()
+
+    points, _ = client.scroll(
+        collection_name=COLLECTION_NAME,
+        limit=100000,
+        with_payload=True,
+        with_vectors=False,
+    )
+
+    chunks = []
+
+    for p in points:
+        chunks.append({
+            "text": p.payload["text"],
+            "page": p.payload["page"],
+            "source": p.payload["source"],
+            "chunk_index": p.payload["chunk_index"],
+        })
+
+    return chunks

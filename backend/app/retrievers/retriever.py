@@ -6,6 +6,9 @@ The agent follows a Thought → Action → Observation loop:
 2. Evaluates if the retrieved context sufficiently answers the question
 3. If insufficient, reformulates the query and retrieves again (up to MAX_STEPS)
 """
+from app.retrievers.bm25_retriever import BM25Retriever
+from app.retrievers import rrf
+from app.vectordb.qdrant_store import get_all_chunks
 import logging
 from typing import List, Dict, Any, Tuple
 
@@ -16,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 3
 MIN_CHUNKS_THRESHOLD = 2
-MIN_SCORE_THRESHOLD = 0.3
+
 
 
 def _evaluate_sufficiency(chunks: List[Dict[str, Any]], question: str) -> bool:
@@ -26,8 +29,8 @@ def _evaluate_sufficiency(chunks: List[Dict[str, Any]], question: str) -> bool:
     """
     if len(chunks) < MIN_CHUNKS_THRESHOLD:
         return False
-    # Check if any chunk has a meaningful similarity score
-    high_score_chunks = [c for c in chunks if c["score"] >= MIN_SCORE_THRESHOLD]
+    # Check if any chunk has a meaningful fusion score
+    high_score_chunks = [c for c in chunks if c.get("fusion_score", 0) > 0]
     return len(high_score_chunks) >= 1
 
 
@@ -58,6 +61,10 @@ def retrieve(
     Returns:
         Tuple of (deduplicated_chunks, num_retrieval_steps).
     """
+    # Rebuild BM25 index from current Qdrant contents (captures newly uploaded docs)
+    all_corpus_chunks = get_all_chunks()
+    bm25 = BM25Retriever(all_corpus_chunks)
+
     all_chunks: List[Dict[str, Any]] = []
     seen_indices = set()
     steps = 0
@@ -68,8 +75,20 @@ def retrieve(
         logger.info(f"[ReAct Step {step+1}] Query: '{current_query}'")
 
         # Action: embed and retrieve
-        query_vector = embed_query(current_query)
-        retrieved = similarity_search(query_vector, top_k=top_k)
+        dense_results = similarity_search(
+            embed_query(current_query),
+            top_k=top_k
+        )
+
+        sparse_results = bm25.retrieve(
+            current_query,
+            top_k=top_k
+        )
+
+        retrieved = rrf.reciprocal_rank_fusion(
+            dense_results,
+            sparse_results
+        )
 
         # Observation: add new unique chunks
         new_chunks = []
@@ -92,8 +111,7 @@ def retrieve(
             current_query = _reformulate_query(question, step + 1)
             logger.info(f"[ReAct] Reformulating query for step {step+2}: '{current_query}'")
 
-    # Sort final chunks by relevance score descending
-    all_chunks.sort(key=lambda x: x["score"], reverse=True)
+    
 
     # Return top_k best unique chunks
     return all_chunks[:top_k], steps
