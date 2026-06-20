@@ -8,14 +8,39 @@ The agent follows a Thought → Action → Observation loop:
 """
 from app.retrievers.bm25_retriever import BM25Retriever
 from app.retrievers import rrf
-from app.vectordb.qdrant_store import get_all_chunks
+from app.vectordb.qdrant_store import get_all_chunks, get_document_count
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from app.embeddings.embedder import embed_query
 from app.vectordb.qdrant_store import similarity_search
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# BM25 cache — rebuilt only when the corpus size changes (new PDF uploaded)
+# ---------------------------------------------------------------------------
+_bm25_cache: Optional[BM25Retriever] = None
+_bm25_chunk_count: int = 0
+
+
+def _get_bm25() -> BM25Retriever:
+    """Return the cached BM25Retriever, rebuilding only if corpus has changed."""
+    global _bm25_cache, _bm25_chunk_count
+
+    current_count = get_document_count()
+    if _bm25_cache is None or current_count != _bm25_chunk_count:
+        logger.info(
+            f"[BM25] Rebuilding index: chunk count changed "
+            f"{_bm25_chunk_count} → {current_count}"
+        )
+        all_chunks = get_all_chunks()
+        _bm25_cache = BM25Retriever(all_chunks)
+        _bm25_chunk_count = current_count
+    else:
+        logger.debug("[BM25] Using cached index (corpus unchanged).")
+
+    return _bm25_cache
 
 MAX_STEPS = 3
 MIN_CHUNKS_THRESHOLD = 2
@@ -61,9 +86,8 @@ def retrieve(
     Returns:
         Tuple of (deduplicated_chunks, num_retrieval_steps).
     """
-    # Rebuild BM25 index from current Qdrant contents (captures newly uploaded docs)
-    all_corpus_chunks = get_all_chunks()
-    bm25 = BM25Retriever(all_corpus_chunks)
+    # Use cached BM25 index — only rebuilt when new docs are uploaded
+    bm25 = _get_bm25()
 
     all_chunks: List[Dict[str, Any]] = []
     seen_indices = set()

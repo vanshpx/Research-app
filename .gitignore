@@ -15,6 +15,7 @@ build/
 uploads/
 tmp/
 *.tmp
+test.ipynb
 
 # Editor
 .vscode/

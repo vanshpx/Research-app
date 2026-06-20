@@ -26,14 +26,26 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: pre-load embedding model to avoid cold start on first request."""
+    """Startup: pre-load heavy models to avoid cold start on first request."""
     logger.info("Starting Research Q&A Assistant...")
+
+    # 1. Embedding model (BGE)
     try:
         from app.embeddings.embedder import get_model
         get_model()
         logger.info("Embedding model pre-loaded successfully.")
     except Exception as e:
         logger.warning(f"Could not pre-load embedding model: {e}")
+
+    # 2. Cross-encoder reranker (BAAI/bge-reranker-base)
+    try:
+        from app.retrievers.cross_encoder_reranker import CrossEncoderReranker
+        app.state.reranker = CrossEncoderReranker()
+        logger.info("Cross-encoder reranker pre-loaded successfully.")
+    except Exception as e:
+        logger.warning(f"Could not pre-load reranker: {e}")
+        app.state.reranker = None
+
     yield
     logger.info("Shutting down Research Q&A Assistant.")
 

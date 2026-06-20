@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.loaders.pdf_loader import load_pdf
@@ -87,7 +87,7 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @router.post("/query", response_model=QueryResponse, tags=["Q&A"])
-async def query_documents(body: QueryRequest):
+async def query_documents(body: QueryRequest, request: Request):
     """
     Ask a question against all uploaded documents.
     Uses ReAct retrieval agent + Gemini 2.5 Flash for answer generation.
@@ -115,7 +115,16 @@ async def query_documents(body: QueryRequest):
                 question=body.question,
             )
 
-        # Step 2: Generate answer with Gemini
+        # Step 2: Cross-encoder reranking
+        reranker = getattr(request.app.state, "reranker", None)
+        if reranker is not None:
+            logger.info(f"Reranking {len(chunks)} chunks with cross-encoder...")
+            chunks = reranker.rerank(body.question, chunks, top_k=body.top_k or 5)
+            logger.info(f"Reranked down to {len(chunks)} chunks.")
+        else:
+            logger.warning("Reranker not available; skipping reranking step.")
+
+        # Step 3: Generate answer with Gemini
         logger.info(f"Generating answer using {len(chunks)} chunks...")
         answer = generate_answer(body.question, chunks)
 
