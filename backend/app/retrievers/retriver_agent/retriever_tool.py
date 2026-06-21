@@ -125,4 +125,7 @@ def retrieve(query: str) -> str:
 #
 # No other file needs to change.
 
-TOOL_REGISTRY: list = [retrieve]
+from app.tools.tavily_search_tool import tavily_search
+from app.tools.calculator_tool import calculator
+
+TOOL_REGISTRY: list = [retrieve, tavily_search, calculator]

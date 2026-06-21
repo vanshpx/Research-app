@@ -54,6 +54,7 @@ from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
+
 from app.retrievers.retriver_agent.agent import AgentState as Phase4AgentState
 from app.retrievers.retriver_agent.agent import build_agent_node
 from app.retrievers.retriver_agent.retriever_tool import TOOL_REGISTRY
@@ -203,20 +204,50 @@ def _build_phase4_retrieve_node(phase4_graph: Any):
 
 def _extract_chunks_from_tool_messages(messages: list) -> list[dict]:
     """
-    [Phase 5] Fallback: parse chunk JSON from ToolMessage content.
-    Scans messages in reverse and returns the first parseable chunk list.
+    [Phase 5] Fallback: parse chunks from ALL ToolMessages in the conversation.
+
+    Handles two tool output formats:
+      - retrieve tool:    list of {"text", "source", "page", "rerank_score"}
+      - tavily_search:    list of {"title", "content", "url"}
+                         → normalised to {"text", "source", "page"} for Phase 5
+
+    Merges results from every tool call so the generate_node has the
+    complete evidence picture, not just the last retrieval round.
     """
     from langchain_core.messages import ToolMessage
 
-    for msg in reversed(messages):
-        if isinstance(msg, ToolMessage):
-            try:
-                data = json.loads(msg.content)
-                if isinstance(data, list) and data and "text" in data[0]:
-                    return data
-            except (json.JSONDecodeError, TypeError, KeyError):
-                continue
-    return []
+    all_chunks: list[dict] = []
+
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        try:
+            data = json.loads(msg.content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if not isinstance(data, list) or not data:
+            continue
+
+        first = data[0]
+        if not isinstance(first, dict):
+            continue
+
+        # --- retrieve tool format: has "text" key ---
+        if "text" in first:
+            all_chunks.extend(data)
+
+        # --- tavily_search format: has "content" + "url" keys ---
+        elif "content" in first and "url" in first:
+            for result in data:
+                all_chunks.append({
+                    "text": (result.get("content") or result.get("title") or "").strip(),
+                    "source": (result.get("url") or "").strip(),
+                    "page": 0,          # web results have no page number
+                    "rerank_score": 0.0,
+                })
+
+    return all_chunks
 
 
 # ---------------------------------------------------------------------------

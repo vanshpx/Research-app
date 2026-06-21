@@ -12,3 +12,4 @@ pydantic>=2.0.0
 aiofiles>=23.0.0
 google-genai
 rank-bm25
+tavily
