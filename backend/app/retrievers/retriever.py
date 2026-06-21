@@ -18,27 +18,45 @@ from app.vectordb.qdrant_store import similarity_search
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# BM25 cache — rebuilt only when the corpus size changes (new PDF uploaded)
+# BM25 cache — built on first upload, rebuilt on every subsequent upload.
+# Queries always read from the cache; never trigger a rebuild themselves.
 # ---------------------------------------------------------------------------
 _bm25_cache: Optional[BM25Retriever] = None
 _bm25_chunk_count: int = 0
 
 
-def _get_bm25() -> BM25Retriever:
-    """Return the cached BM25Retriever, rebuilding only if corpus has changed."""
+def rebuild_bm25() -> None:
+    """
+    Build (or rebuild) the BM25 index from the current Qdrant corpus.
+
+    Call this immediately after every successful PDF upload so the index
+    is always fresh before the next query arrives. Routes.py owns this call.
+    """
     global _bm25_cache, _bm25_chunk_count
 
-    current_count = get_document_count()
-    if _bm25_cache is None or current_count != _bm25_chunk_count:
-        logger.info(
-            f"[BM25] Rebuilding index: chunk count changed "
-            f"{_bm25_chunk_count} → {current_count}"
+    all_chunks = get_all_chunks()
+    _bm25_cache = BM25Retriever(all_chunks)
+    _bm25_chunk_count = len(all_chunks)
+    logger.info(
+        "[BM25] Index built — %d chunks indexed.", _bm25_chunk_count
+    )
+
+
+def _get_bm25() -> BM25Retriever:
+    """
+    Return the cached BM25Retriever.
+
+    If no upload has happened yet (cache is empty), builds a one-time
+    fallback so queries don't crash on a fresh server start with pre-loaded data.
+    """
+    global _bm25_cache
+
+    if _bm25_cache is None:
+        logger.warning(
+            "[BM25] Cache is empty — building fallback index. "
+            "Upload a PDF to populate the index properly."
         )
-        all_chunks = get_all_chunks()
-        _bm25_cache = BM25Retriever(all_chunks)
-        _bm25_chunk_count = current_count
-    else:
-        logger.debug("[BM25] Using cached index (corpus unchanged).")
+        rebuild_bm25()
 
     return _bm25_cache
 

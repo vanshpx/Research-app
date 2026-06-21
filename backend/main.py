@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     """Startup: pre-load heavy models to avoid cold start on first request."""
     logger.info("Starting Research Q&A Assistant...")
 
-    # 1. Embedding model (BGE)
+    # 1. Embedding model (BGE) — loaded eagerly so first query is fast
     try:
         from app.embeddings.embedder import get_model
         get_model()
@@ -37,17 +37,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Could not pre-load embedding model: {e}")
 
-    # 2. Cross-encoder reranker (BAAI/bge-reranker-base)
+    # 2. LangGraph agent graph — builds and caches graph + LLM binding
     try:
-        from app.retrievers.cross_encoder_reranker import CrossEncoderReranker
-        app.state.reranker = CrossEncoderReranker()
-        logger.info("Cross-encoder reranker pre-loaded successfully.")
+        from app.retrievers.retriver_agent.react_agent import _get_graph
+        _get_graph()
+        logger.info("ReAct agent graph pre-built successfully.")
+    except Exception as e:
+        logger.warning(f"Could not pre-build agent graph: {e}")
+
+    # 3. Cross-encoder reranker (BAAI/bge-reranker-base)
+    #    Loaded here so the first query doesn't pay the 2-5s model load cost.
+    try:
+        from app.retrievers.retriver_agent.retriever_tool import _get_reranker
+        _get_reranker()
+        logger.info("CrossEncoderReranker pre-loaded successfully.")
     except Exception as e:
         logger.warning(f"Could not pre-load reranker: {e}")
-        app.state.reranker = None
 
     yield
     logger.info("Shutting down Research Q&A Assistant.")
+
 
 
 app = FastAPI(

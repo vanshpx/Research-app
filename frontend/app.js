@@ -18,8 +18,6 @@ const uploadZone      = document.getElementById("uploadZone");
 const fileInput       = document.getElementById("fileInput");
 const uploadToast     = document.getElementById("uploadToast");
 const uploadProgressWrap = document.getElementById("uploadProgressWrap");
-const uploadProgressFill = document.getElementById("uploadProgressFill");
-const uploadProgressText = document.getElementById("uploadProgressText");
 const docList         = document.getElementById("docList");
 const docEmpty        = document.getElementById("docEmpty");
 const docCount        = document.getElementById("docCount");
@@ -33,6 +31,11 @@ const closePanelBtn   = document.getElementById("closePanelBtn");
 const appLayout       = document.querySelector(".app-layout");
 const statusDot       = document.getElementById("statusDot");
 const statusText      = document.getElementById("statusText");
+
+// Pipeline stage elements
+const stageChunking  = document.getElementById("stageChunking");
+const stageEmbedding = document.getElementById("stageEmbedding");
+const stageIndexing  = document.getElementById("stageIndexing");
 
 // ─── Health Check ──────────────────────────────────────────────────────────
 async function checkHealth() {
@@ -84,18 +87,36 @@ async function handleFile(file) {
   }
 
   state.isUploading = true;
-  showProgress(true, "Uploading...");
   hideToast();
+  pipelineReset();
+  uploadProgressWrap.classList.remove("hidden");
 
   const formData = new FormData();
   formData.append("file", file);
 
-  // Animate progress bar (pseudo-progress since we can't track upload %)
-  animateProgress(0, 40, 600);
+  // Stage 1: CHUNKING — starts immediately (fast, ~0.3s real time)
+  pipelineActivate("stageChunking");
+
+  // Stage 2: CONVERTING TO VECTOR — starts after a brief delay
+  // Embedding is the slowest step; we start showing it early so
+  // the UI feels in sync with the server.
+  const embeddingTimer = setTimeout(() => {
+    pipelineComplete("stageChunking");
+    pipelineActivate("stageEmbedding");
+  }, 700);
+
+  // Stage 3: INDEXING — shown after embedding animation
+  const indexingTimer = setTimeout(() => {
+    pipelineComplete("stageEmbedding");
+    pipelineActivate("stageIndexing");
+  }, 2200);
 
   try {
     const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: formData });
-    animateProgress(40, 80, 800);
+
+    // Clear timers — response arrived, take control of stage transitions
+    clearTimeout(embeddingTimer);
+    clearTimeout(indexingTimer);
 
     if (!res.ok) {
       const err = await res.json();
@@ -103,43 +124,66 @@ async function handleFile(file) {
     }
 
     const data = await res.json();
-    animateProgress(80, 100, 400);
+
+    // Complete any stages that haven't finished yet, then show done state
+    pipelineComplete("stageChunking");
+    pipelineComplete("stageEmbedding");
+    pipelineComplete("stageIndexing");
 
     setTimeout(() => {
-      showProgress(false);
+      uploadProgressWrap.classList.add("hidden");
       showToast(`✓ "${data.filename}" — ${data.num_chunks} chunks indexed`, "success");
       addDocumentToList(data.filename, data.num_chunks);
       checkHealth();
       state.isUploading = false;
       fileInput.value = "";
-    }, 500);
+    }, 600);
 
   } catch (e) {
-    showProgress(false);
+    clearTimeout(embeddingTimer);
+    clearTimeout(indexingTimer);
+    uploadProgressWrap.classList.add("hidden");
     showToast(e.message || "Upload failed. Please try again.", "error");
     state.isUploading = false;
   }
 }
 
-function animateProgress(from, to, duration) {
-  const start = performance.now();
-  function step(now) {
-    const t = Math.min((now - start) / duration, 1);
-    const val = from + (to - from) * easeOut(t);
-    uploadProgressFill.style.width = `${val}%`;
-    uploadProgressText.textContent = `Processing... ${Math.round(val)}%`;
-    if (t < 1) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
+// ─── Pipeline Stage Controller ─────────────────────────────────────────────
+
+/** Reset all stages to idle state */
+function pipelineReset() {
+  [stageChunking, stageEmbedding, stageIndexing].forEach(el => {
+    el.classList.remove("active", "done");
+    const fill = el.querySelector(".connector-fill");
+    if (fill) fill.style.width = "0%";
+  });
 }
 
-function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+/** Set a stage to active (pulsing) */
+function pipelineActivate(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove("done");
+  el.classList.add("active");
+}
 
-function showProgress(show, text = "") {
+/** Mark a stage as complete (checkmark) and animate its connector */
+function pipelineComplete(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove("active");
+  el.classList.add("done");
+  // Animate the connector line filling up
+  const fill = el.querySelector(".connector-fill");
+  if (fill) {
+    fill.style.transition = "width 0.4s ease";
+    fill.style.width = "100%";
+  }
+}
+
+function showProgress(show) {
   if (show) {
     uploadProgressWrap.classList.remove("hidden");
-    uploadProgressFill.style.width = "0%";
-    uploadProgressText.textContent = text;
   } else {
     uploadProgressWrap.classList.add("hidden");
   }

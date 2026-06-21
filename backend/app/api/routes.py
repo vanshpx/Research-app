@@ -13,9 +13,8 @@ from app.loaders.pdf_loader import load_pdf
 from app.chunkers.text_splitter import chunk_pages
 from app.embeddings.embedder import embed_texts
 from app.vectordb.qdrant_store import upsert_chunks, get_document_count
-from app.retrievers.retriever import retrieve
-from app.llm.gemini import generate_answer
-from app.citation.citation_builder import build_citations
+from app.retrievers.retriever import rebuild_bm25
+from app.retrievers.retriver_agent.react_agent import run_agent
 from app.models.schemas import (
     UploadResponse,
     QueryRequest,
@@ -70,6 +69,11 @@ async def upload_pdf(file: UploadFile = File(...)):
         logger.info("Storing embeddings in Qdrant...")
         upsert_chunks(chunks, embeddings)
 
+        # Step 5: Rebuild BM25 index with the newly added chunks
+        logger.info("Rebuilding BM25 index...")
+        rebuild_bm25()
+        logger.info("BM25 index updated.")
+
         return UploadResponse(
             success=True,
             message=f"Successfully processed '{filename}'.",
@@ -87,10 +91,12 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @router.post("/query", response_model=QueryResponse, tags=["Q&A"])
-async def query_documents(body: QueryRequest, request: Request):
+async def query_documents(body: QueryRequest):
     """
     Ask a question against all uploaded documents.
-    Uses ReAct retrieval agent + Gemini 2.5 Flash for answer generation.
+    Uses the LangGraph ReAct agent:
+      - Iteratively calls the retrieve tool (Dense + BM25 + RRF + CrossEncoder)
+      - Gemini 2.5 Flash reasons over retrieved chunks and generates the answer
     """
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
@@ -103,38 +109,13 @@ async def query_documents(body: QueryRequest, request: Request):
         )
 
     try:
-        # Step 1: ReAct retrieval
-        logger.info(f"Retrieving chunks for question: '{body.question}'")
-        chunks, steps = retrieve(body.question, top_k=body.top_k or 5)
-
-        if not chunks:
-            return QueryResponse(
-                answer="I could not find relevant information in the uploaded documents.",
-                citations=[],
-                retrieval_steps=steps,
-                question=body.question,
-            )
-
-        # Step 2: Cross-encoder reranking
-        reranker = getattr(request.app.state, "reranker", None)
-        if reranker is not None:
-            logger.info(f"Reranking {len(chunks)} chunks with cross-encoder...")
-            chunks = reranker.rerank(body.question, chunks, top_k=body.top_k or 5)
-            logger.info(f"Reranked down to {len(chunks)} chunks.")
-        else:
-            logger.warning("Reranker not available; skipping reranking step.")
-
-        # Step 3: Generate answer with Gemini
-        logger.info(f"Generating answer using {len(chunks)} chunks...")
-        answer = generate_answer(body.question, chunks)
-
-        # Step 3: Build citations
-        citations = build_citations(chunks)
+        logger.info(f"[Agent] Running ReAct agent for: '{body.question}'")
+        answer, citations = run_agent(body.question)
 
         return QueryResponse(
             answer=answer,
             citations=citations,
-            retrieval_steps=steps,
+            retrieval_steps=0,   # agent manages its own steps internally
             question=body.question,
         )
 

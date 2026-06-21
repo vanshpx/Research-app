@@ -16,7 +16,7 @@ class Citation(BaseModel):
     page: int
     source: str
     snippet: str
-    chunk_index: int
+    chunk_index: int = -1  # -1 when not available (e.g. from agent tool results)
 
 
 class QueryRequest(BaseModel):

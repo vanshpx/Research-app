@@ -225,24 +225,111 @@ body {
 .upload-sub { font-size: 0.78rem; color: var(--text-secondary); }
 .file-input { display: none; }
 
-/* Upload progress */
-.upload-progress-wrap { margin-top: 12px; }
-.upload-progress-bar {
-  height: 4px; border-radius: 2px; background: var(--bg-elevated);
-  overflow: hidden; margin-bottom: 6px;
+/* Upload pipeline stages */
+.upload-progress-wrap { margin-top: 16px; }
+
+.pipeline-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
-.upload-progress-fill {
-  height: 100%; border-radius: 2px;
-  background: var(--gradient-primary);
-  width: 0%; transition: width 0.3s ease;
-  animation: shimmer 1.5s infinite;
+
+.pipeline-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
-@keyframes shimmer {
-  0% { filter: brightness(1); }
-  50% { filter: brightness(1.3); }
-  100% { filter: brightness(1); }
+
+.stage-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.upload-progress-text { font-size: 0.78rem; color: var(--text-secondary); text-align: center; }
+
+/* Icon container — holds both the task icon and the checkmark */
+.stage-icon-wrap {
+  position: relative;
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--border-subtle);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.3s ease;
+}
+
+.stage-icon {
+  color: var(--text-muted);
+  transition: all 0.3s ease;
+  position: absolute;
+}
+
+.stage-check {
+  color: var(--accent-emerald);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  position: absolute;
+}
+
+.stage-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  transition: color 0.3s ease;
+}
+
+/* Connector line between stages */
+.stage-connector {
+  width: 2px;
+  height: 20px;
+  background: var(--bg-elevated);
+  margin-left: 16px;
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.connector-fill {
+  position: absolute;
+  top: 0; left: 0;
+  width: 0%;
+  height: 100%;
+  background: var(--accent-emerald);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+/* ACTIVE state — pulsing glow */
+.pipeline-stage.active .stage-icon-wrap {
+  border-color: var(--accent-primary);
+  background: rgba(99,102,241,0.12);
+  box-shadow: 0 0 0 0 rgba(99,102,241,0.5);
+  animation: stage-pulse 1.4s ease-in-out infinite;
+}
+.pipeline-stage.active .stage-icon {
+  color: var(--accent-primary);
+}
+.pipeline-stage.active .stage-label {
+  color: var(--text-accent);
+}
+
+@keyframes stage-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(99,102,241,0.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(99,102,241,0);   }
+  100% { box-shadow: 0 0 0 0   rgba(99,102,241,0);   }
+}
+
+/* DONE state — green checkmark */
+.pipeline-stage.done .stage-icon-wrap {
+  border-color: rgba(16,185,129,0.5);
+  background: rgba(16,185,129,0.1);
+  animation: none;
+  box-shadow: none;
+}
+.pipeline-stage.done .stage-icon  { opacity: 0; }
+.pipeline-stage.done .stage-check { opacity: 1; }
+.pipeline-stage.done .stage-label { color: var(--accent-emerald); }
 
 /* Upload toast */
 .upload-toast {
