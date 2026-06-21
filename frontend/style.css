@@ -154,10 +154,6 @@ body {
   grid-template-columns: var(--sidebar-w) 1fr;
   grid-template-rows: 1fr;
   z-index: 1;
-  transition: grid-template-columns var(--transition);
-}
-.app-layout.citations-open {
-  grid-template-columns: var(--sidebar-w) 1fr var(--citations-w);
 }
 
 /* ===== SIDEBAR ===== */
@@ -573,12 +569,22 @@ body {
 
 /* ===== CITATIONS PANEL ===== */
 .citations-panel {
+  position: fixed;
+  top: var(--header-h);
+  right: 0;
+  bottom: 0;
+  width: var(--citations-w);
   background: var(--bg-surface);
   border-left: 1px solid var(--border-subtle);
-  display: flex; flex-direction: column;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  z-index: 90;
+  /* Start off-screen to the right */
   transform: translateX(100%);
-  transition: transform var(--transition);
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Ensure it renders above chat content but below header */
+  box-shadow: -8px 0 32px rgba(0,0,0,0.4);
 }
 .app-layout.citations-open .citations-panel {
   transform: translateX(0);

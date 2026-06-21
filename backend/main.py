@@ -37,11 +37,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Could not pre-load embedding model: {e}")
 
-    # 2. LangGraph agent graph — builds and caches graph + LLM binding
+    # 2. Phase 4 + Phase 5 graphs — builds and caches both graphs + LLM binding.
+    #    Phase 4 = ReAct retrieval, Phase 5 = Self-RAG verification wrapper.
     try:
         from app.retrievers.retriver_agent.react_agent import _get_graph
         _get_graph()
-        logger.info("ReAct agent graph pre-built successfully.")
+        logger.info("Phase 4 + Phase 5 Self-RAG graphs pre-built successfully.")
     except Exception as e:
         logger.warning(f"Could not pre-build agent graph: {e}")
 
