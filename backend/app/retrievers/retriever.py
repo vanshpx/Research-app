@@ -63,6 +63,12 @@ def _get_bm25() -> BM25Retriever:
 MAX_STEPS = 3
 MIN_CHUNKS_THRESHOLD = 2
 
+# ---------------------------------------------------------------------------
+# Retrieval depth constants — single source of truth for all depth limits.
+# ---------------------------------------------------------------------------
+DENSE_TOP_K: int = 15   # chunks fetched from Qdrant (dense) per step
+BM25_TOP_K: int = 15    # chunks fetched from BM25 (sparse) per step
+RRF_TOP_K: int = 10     # chunks kept after Reciprocal Rank Fusion
 
 
 def _evaluate_sufficiency(chunks: List[Dict[str, Any]], question: str) -> bool:
@@ -92,18 +98,22 @@ def _reformulate_query(original: str, step: int) -> str:
 
 def retrieve(
     question: str,
-    top_k: int = 5,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     ReAct-style retrieval agent that iteratively retrieves chunks.
 
+    Depth settings (enforced via module constants):
+      Dense (Qdrant) : DENSE_TOP_K = {dense}
+      BM25 (sparse)  : BM25_TOP_K  = {bm25}
+      RRF output cap : RRF_TOP_K   = {rrf}
+
     Args:
         question: The user's natural language question.
-        top_k: Number of top chunks to retrieve per step.
 
     Returns:
         Tuple of (deduplicated_chunks, num_retrieval_steps).
-    """
+        len(chunks) <= RRF_TOP_K ({rrf}).
+    """.format(dense=DENSE_TOP_K, bm25=BM25_TOP_K, rrf=RRF_TOP_K)
     # Use cached BM25 index — only rebuilt when new docs are uploaded
     bm25 = _get_bm25()
 
@@ -114,23 +124,25 @@ def retrieve(
 
     for step in range(MAX_STEPS):
         steps += 1
-        logger.info(f"[ReAct Step {step+1}] Query: '{current_query}'")
+        logger.info("[ReAct Step %d] Query: %r", step + 1, current_query)
 
         # Action: embed and retrieve
         dense_results = similarity_search(
             embed_query(current_query),
-            top_k=top_k
+            top_k=DENSE_TOP_K,
         )
 
         sparse_results = bm25.retrieve(
             current_query,
-            top_k=top_k
+            top_k=BM25_TOP_K,
         )
 
         retrieved = rrf.reciprocal_rank_fusion(
             dense_results,
-            sparse_results
+            sparse_results,
         )
+        # Cap RRF output immediately — only keep the top-ranked RRF_TOP_K chunks.
+        retrieved = retrieved[:RRF_TOP_K]
 
         # Observation: add new unique chunks
         new_chunks = []
@@ -141,19 +153,18 @@ def retrieve(
                 new_chunks.append(chunk)
                 all_chunks.append(chunk)
 
-        logger.info(f"[ReAct Step {step+1}] Retrieved {len(new_chunks)} new chunks.")
+        logger.info("[ReAct Step %d] %d new chunks added.", step + 1, len(new_chunks))
 
         # Thought: evaluate sufficiency
         if _evaluate_sufficiency(all_chunks, question):
-            logger.info(f"[ReAct] Sufficient context found after {steps} step(s).")
+            logger.info("[ReAct] Sufficient context after %d step(s).", steps)
             break
 
         if step < MAX_STEPS - 1:
-            # Reformulate for next iteration
             current_query = _reformulate_query(question, step + 1)
-            logger.info(f"[ReAct] Reformulating query for step {step+2}: '{current_query}'")
+            logger.info(
+                "[ReAct] Reformulating query for step %d: %r", step + 2, current_query
+            )
 
-    
-
-    # Return top_k best unique chunks
-    return all_chunks[:top_k], steps
+    # Return at most RRF_TOP_K unique chunks
+    return all_chunks[:RRF_TOP_K], steps

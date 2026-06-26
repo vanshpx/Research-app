@@ -48,6 +48,12 @@ def _get_reranker() -> CrossEncoderReranker:
 
 
 # ---------------------------------------------------------------------------
+# Retrieval depth — CrossEncoder output limit.
+# The upstream limits (Dense=15, BM25=15, RRF=10) live in retriever.py.
+# ---------------------------------------------------------------------------
+_RERANK_TOP_K: int = 5  # chunks returned to the LLM after CrossEncoder reranking
+
+# ---------------------------------------------------------------------------
 # Tool definition
 # ---------------------------------------------------------------------------
 
@@ -57,9 +63,11 @@ def retrieve(query: str) -> str:
     """
     Search the research document corpus using hybrid retrieval.
 
-    Runs Dense (Qdrant) + BM25 retrieval, fuses results with
-    Reciprocal Rank Fusion, and reranks with a cross-encoder to
-    return the top-5 most relevant chunks.
+    Pipeline depth (enforced via constants):
+      Dense (Qdrant)  : 15 chunks
+      BM25 (sparse)   : 15 chunks
+      RRF fusion cap  : 10 chunks
+      CrossEncoder    : top 5 returned to the LLM
 
     Args:
         query: A natural-language search string. Be specific —
@@ -76,8 +84,8 @@ def retrieve(query: str) -> str:
     logger.info("[retriever_tool] retrieve() called — query: %r", query)
 
     try:
-        # Step 1: Dense + BM25 + RRF (returns top_k=10 to give reranker more to work with)
-        chunks, steps = _pipeline_retrieve(query, top_k=10)
+        # Step 1: Dense(15) + BM25(15) + RRF cap(10) — depth enforced in retriever.py
+        chunks, steps = _pipeline_retrieve(query)
         logger.info(
             "[retriever_tool] pipeline returned %d chunks in %d step(s).",
             len(chunks), steps,
@@ -90,14 +98,14 @@ def retrieve(query: str) -> str:
         logger.warning("[retriever_tool] no chunks returned for query %r", query)
         return json.dumps([])
 
-    # Step 2: Cross-encoder reranking → trim to top 5
+    # Step 2: CrossEncoder reranking — output capped to _RERANK_TOP_K (5)
     try:
         reranker = _get_reranker()
-        chunks = reranker.rerank(query, chunks, top_k=5)
+        chunks = reranker.rerank(query, chunks, top_k=_RERANK_TOP_K)
         logger.info("[retriever_tool] reranked to %d chunks.", len(chunks))
     except Exception as exc:
         logger.warning("[retriever_tool] reranker failed, using raw RRF order: %s", exc)
-        chunks = chunks[:5]
+        chunks = chunks[:_RERANK_TOP_K]
 
     # Normalise to the documented output schema
     output: list[dict[str, Any]] = [

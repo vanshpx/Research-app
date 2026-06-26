@@ -3,25 +3,18 @@ retrievers/graph_builder.py
 ----------------------------
 Single source of truth for ALL LangGraph graph assembly.
 
-This file contains two graph factories:
-
   ┌─────────────────────────────────────────────────────────────────┐
-  │  PHASE 4 — build_graph(llm)                                     │
+  │  build_graph(llm)  — ONE function, full pipeline                │
   │                                                                 │
-  │  ReAct retrieval agent:                                         │
-  │    START → agent_node → tool_node (loop) → END                 │
+  │  Phase 4 (internal) — ReAct retrieval agent:                   │
+  │    agent_node → tool_node (loop)                               │
+  │    Tools: retrieve / tavily_search / calculator                 │
+  │    Retrieval: Dense (Qdrant) + BM25 → RRF → CrossEncoder       │
   │                                                                 │
-  │  Retrieval pipeline per tool call:                              │
-  │    Dense (Qdrant) + BM25 → RRF fusion → CrossEncoder rerank    │
-  └─────────────────────────────────────────────────────────────────┘
-
-  ┌─────────────────────────────────────────────────────────────────┐
-  │  PHASE 5 — build_phase5_graph(llm, phase4_graph)               │
-  │                                                                 │
-  │  Self-RAG verification wrapper around Phase 4:                  │
+  │  Phase 5 (returned) — Self-RAG verification wrapper:           │
   │    START                                                        │
   │      → extract_question_node                                    │
-  │      → phase4_retrieve_node  (runs Phase 4 as a black-box)     │
+  │      → phase4_retrieve_node  (Phase 4 as an inner black-box)   │
   │      → generate_node         (first answer from chunks)         │
   │      → verify_node           (SUPPORTED / PARTIALLY / UNSUP.)  │
   │      → regenerate_node  ──┐  (up to MAX_RETRIES = 3 loops)     │
@@ -30,17 +23,17 @@ This file contains two graph factories:
   └─────────────────────────────────────────────────────────────────┘
 
 Usage:
-    from app.retrievers.graph_builder import build_graph, build_phase5_graph
+    from app.retrievers.graph_builder import build_graph
 
     llm = ChatGroq(model="qwen/qwen3-32b", ...)
-    phase4 = build_graph(llm)
-    phase5 = build_phase5_graph(llm, phase4)
+    graph = build_graph(llm)          # returns compiled Phase 5 graph
+    graph.invoke({...})
 
 Extending:
-  Phase 6  – add new tools to TOOL_REGISTRY; ToolNode picks them up automatically.
-  Phase 7  – inject memory_chunks into generate_node prompt.
-  Phase 9  – prepend a planner_node before phase4_retrieve_node.
-  Phase 10 – promote this graph to a sub-graph under a supervisor.
+  Add new tools  – update TOOL_REGISTRY in retriever_tool.py; picked up automatically.
+  Phase 7        – inject memory_chunks into generate_node prompt.
+  Phase 9        – prepend a planner_node before phase4_retrieve_node.
+  Phase 10       – promote this graph to a sub-graph under a supervisor.
 """
 
 from __future__ import annotations
@@ -74,126 +67,71 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def should_continue(state: Phase4AgentState) -> Literal["tool_node", "__end__"]:
+# ---------------------------------------------------------------------------
+# Internal routing helper for the Phase 4 ReAct loop
+# ---------------------------------------------------------------------------
+
+def _should_continue(state: Phase4AgentState) -> Literal["tool_node", "__end__"]:
     """
-    [Phase 4] Routing function called after every agent_node execution.
+    Route after every agent_node execution inside the Phase 4 ReAct loop.
 
-    Logic:
-      - If the last AIMessage contains tool_calls → route to tool_node.
-      - Otherwise (plain text answer) → route to END.
-
-    The MAX_STEPS guard lives inside agent_node (agent.py), which forces
-    a plain-text answer message when the step limit is reached — causing
-    this function to naturally route to END.
+      - Last message has tool_calls → route to tool_node (execute the tool).
+      - Last message is plain text  → route to END (done retrieving).
     """
     messages = state["messages"]
     if not messages:
         return "__end__"
 
-    last_message = messages[-1]
-
-    if isinstance(last_message, AIMessage) and getattr(last_message, "tool_calls", None):
-        logger.debug("[Phase4] should_continue → tool_node")
+    last = messages[-1]
+    if isinstance(last, AIMessage) and getattr(last, "tool_calls", None):
+        logger.debug("[Phase4] _should_continue → tool_node")
         return "tool_node"
 
-    logger.debug("[Phase4] should_continue → __end__")
+    logger.debug("[Phase4] _should_continue → __end__")
     return "__end__"
 
 
-def build_graph(llm: Any) -> Any:
-    """
-    [Phase 4] Construct and compile the ReAct retrieval agent graph.
-
-    Graph topology:
-        START → agent_node ──(has tool_calls)──→ tool_node → agent_node (loop)
-                           ──(plain answer)────→ END
-
-    Args:
-        llm: A bare LangChain chat model (e.g. ChatGroq).
-             Tools are bound inside this function.
-
-    Returns:
-        Compiled LangGraph graph. Invoke with:
-            graph.invoke({"messages": [HumanMessage(content=query)]})
-    """
-    # 1. Bind tools so the LLM can emit structured tool-call objects.
-    llm_with_tools = llm.bind_tools(TOOL_REGISTRY)
-    logger.info("[Phase4] LLM bound with tools: %s", [t.name for t in TOOL_REGISTRY])
-
-    # 2. Build nodes.
-    agent_node_fn = build_agent_node(llm_with_tools)
-    tool_node = ToolNode(TOOL_REGISTRY)
-
-    # 3. Assemble graph.
-    graph = StateGraph(Phase4AgentState)
-    graph.add_node("agent_node", agent_node_fn)
-    graph.add_node("tool_node", tool_node)
-
-    graph.add_edge(START, "agent_node")
-    graph.add_conditional_edges(
-        "agent_node",
-        should_continue,
-        {"tool_node": "tool_node", "__end__": END},
-    )
-    graph.add_edge("tool_node", "agent_node")
-
-    # 4. Compile.
-    compiled = graph.compile()
-    logger.info("[Phase4] Graph compiled successfully.")
-    return compiled
-
-
-# =============================================================================
-# PHASE 5 — Self-RAG Verification Wrapper
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Phase 5 helpers — private, used only inside build_graph()
+# ---------------------------------------------------------------------------
 
 MAX_RETRIES: int = 3
 """Maximum verify → regenerate cycles before returning the best available answer."""
 
 
-# ---------------------------------------------------------------------------
-# Phase 4 wrapper node
-# ---------------------------------------------------------------------------
-
-
 def _build_phase4_retrieve_node(phase4_graph: Any):
     """
-    [Phase 5] Wrap the Phase 4 compiled graph as a single LangGraph node.
+    Wrap the compiled Phase 4 ReAct graph as a single Phase 5 node.
 
-    Invokes Phase 4 and extracts:
-      - retrieved_chunks: from state["retrieved_chunks"] if Phase 5 AgentState
-        was used, otherwise parsed from ToolMessage JSON (fallback).
-
-    Args:
-        phase4_graph: Compiled Phase 4 graph (from build_graph()).
-
-    Returns:
-        Callable[[Phase5AgentState], dict]
+    Runs Phase 4 end-to-end, then extracts all retrieved chunks from the
+    resulting ToolMessages (supports both `retrieve` and `tavily_search`
+    output formats) and writes them to state["retrieved_chunks"].
     """
 
     def phase4_retrieve_node(state: dict[str, Any]) -> dict[str, Any]:
         question: str = state["question"]
         logger.info("[Phase5] phase4_retrieve_node — running for: %r", question[:80])
 
-        phase4_input = {"messages": [HumanMessage(content=question)]}
         try:
-            phase4_output = phase4_graph.invoke(phase4_input)
+            phase4_output = phase4_graph.invoke(
+                {"messages": [HumanMessage(content=question)]}
+            )
         except Exception as exc:
             logger.error("[Phase5] Phase 4 graph failed: %s", exc)
             raise RuntimeError(f"Phase 4 retrieval failed: {exc}") from exc
 
-        # Primary: Phase 4 state already has retrieved_chunks (Phase 5 schema).
+        # Primary: explicit retrieved_chunks field (set if Phase 5 state was used).
         chunks: list[dict] = phase4_output.get("retrieved_chunks", [])
 
-        # Fallback: parse JSON from the last ToolMessage.
+        # Fallback: parse ToolMessage JSON — covers the normal Phase 4 AgentState.
         if not chunks:
             chunks = _extract_chunks_from_tool_messages(
                 phase4_output.get("messages", [])
             )
             if not chunks:
                 logger.warning(
-                    "[Phase5] phase4_retrieve_node — no chunks found. "
-                    "Proceeding with empty list."
+                    "[Phase5] phase4_retrieve_node — no chunks found; "
+                    "proceeding with empty list."
                 )
 
         logger.info("[Phase5] phase4_retrieve_node — %d chunks extracted.", len(chunks))
@@ -204,15 +142,14 @@ def _build_phase4_retrieve_node(phase4_graph: Any):
 
 def _extract_chunks_from_tool_messages(messages: list) -> list[dict]:
     """
-    [Phase 5] Fallback: parse chunks from ALL ToolMessages in the conversation.
+    Parse chunks from every ToolMessage in the Phase 4 conversation.
 
     Handles two tool output formats:
-      - retrieve tool:    list of {"text", "source", "page", "rerank_score"}
-      - tavily_search:    list of {"title", "content", "url"}
-                         → normalised to {"text", "source", "page"} for Phase 5
+      - retrieve tool:  list of {"text", "source", "page", "rerank_score"}
+      - tavily_search:  list of {"title", "content", "url"}
+                        → normalised to {"text", "source", "page"} for Phase 5
 
-    Merges results from every tool call so the generate_node has the
-    complete evidence picture, not just the last retrieval round.
+    Collects from ALL tool calls so the generator has the full evidence picture.
     """
     from langchain_core.messages import ToolMessage
 
@@ -233,31 +170,25 @@ def _extract_chunks_from_tool_messages(messages: list) -> list[dict]:
         if not isinstance(first, dict):
             continue
 
-        # --- retrieve tool format: has "text" key ---
         if "text" in first:
+            # retrieve tool format
             all_chunks.extend(data)
-
-        # --- tavily_search format: has "content" + "url" keys ---
         elif "content" in first and "url" in first:
+            # tavily_search format — normalise to retrieve format
             for result in data:
                 all_chunks.append({
                     "text": (result.get("content") or result.get("title") or "").strip(),
                     "source": (result.get("url") or "").strip(),
-                    "page": 0,          # web results have no page number
+                    "page": 0,
                     "rerank_score": 0.0,
                 })
 
     return all_chunks
 
 
-# ---------------------------------------------------------------------------
-# Extract question node
-# ---------------------------------------------------------------------------
-
-
 def _extract_question_node(state: dict[str, Any]) -> dict[str, Any]:
     """
-    [Phase 5] Pull the user's question from messages into state["question"].
+    Pull the user's question from messages into state["question"].
 
     Runs once at graph entry so all downstream nodes can read
     state["question"] directly without scanning the messages list.
@@ -276,19 +207,14 @@ def _extract_question_node(state: dict[str, Any]) -> dict[str, Any]:
     return {"question": question}
 
 
-# ---------------------------------------------------------------------------
-# Conditional edge: should_regenerate
-# ---------------------------------------------------------------------------
-
-
 def _should_regenerate(
     state: dict[str, Any],
 ) -> Literal["regenerate_node", "__end__"]:
     """
-    [Phase 5] Route after every verify_node execution.
+    Route after every verify_node execution.
 
-    → regenerate_node  if  retry_count < MAX_RETRIES  AND  verdict != SUPPORTED
-    → END              otherwise (SUPPORTED, or retries exhausted)
+      → regenerate_node  if  retry_count < MAX_RETRIES  AND  verdict != SUPPORTED
+      → END              if  SUPPORTED, or retries exhausted
     """
     retry_count: int = state.get("retry_count", 0)
     verdict_str: str = state.get("verification_result", {}).get(
@@ -297,20 +223,20 @@ def _should_regenerate(
 
     if verdict_str == Verdict.SUPPORTED.value:
         logger.info(
-            "[Phase5] should_regenerate → END (verdict=SUPPORTED, retry=%d)", retry_count
+            "[Phase5] _should_regenerate → END (verdict=SUPPORTED, retry=%d)", retry_count
         )
         return "__end__"
 
     if retry_count >= MAX_RETRIES:
         logger.warning(
-            "[Phase5] should_regenerate → END (MAX_RETRIES=%d reached, verdict=%s)",
+            "[Phase5] _should_regenerate → END (MAX_RETRIES=%d reached, verdict=%s)",
             MAX_RETRIES,
             verdict_str,
         )
         return "__end__"
 
     logger.info(
-        "[Phase5] should_regenerate → regenerate_node (verdict=%s, retry=%d/%d)",
+        "[Phase5] _should_regenerate → regenerate_node (verdict=%s, retry=%d/%d)",
         verdict_str,
         retry_count,
         MAX_RETRIES,
@@ -318,31 +244,29 @@ def _should_regenerate(
     return "regenerate_node"
 
 
-# ---------------------------------------------------------------------------
-# Phase 5 graph factory
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Single public graph factory
+# =============================================================================
 
 
-def build_phase5_graph(llm: ChatGroq, phase4_graph: Any) -> Any:
+def build_graph(llm: Any) -> Any:
     """
-    [Phase 5] Construct and compile the Self-RAG verification graph.
+    Build and compile the complete RAG pipeline graph.
 
-    Graph topology:
-        START
-          → extract_question_node
-          → phase4_retrieve_node   (Phase 4 ReAct agent as black-box)
-          → generate_node          (first answer from retrieved chunks)
-          → verify_node            (Self-RAG: SUPPORTED / PARTIALLY / UNSUPPORTED)
-          → regenerate_node ──────→ verify_node  (loop, up to MAX_RETRIES)
-          → END
+    Internally constructs two sub-graphs:
+      Phase 4 — ReAct retrieval agent (agent_node ↔ tool_node loop).
+                Tools: retrieve, tavily_search, calculator.
+                This graph is compiled and captured as a local variable.
+      Phase 5 — Self-RAG verification wrapper around Phase 4.
+                Nodes: extract_question → phase4_retrieve → generate
+                       → verify → (regenerate → verify)* → END
 
     Args:
-        llm:          Bare ChatGroq instance.
-                      Shared across generate, regenerate, and verify nodes.
-        phase4_graph: Compiled Phase 4 graph (from build_graph()).
+        llm: A bare ChatGroq (or compatible) instance.
+             Tool binding and structured-output wiring happen internally.
 
     Returns:
-        Compiled LangGraph graph. Invoke with:
+        Compiled Phase 5 LangGraph graph. Invoke with:
             graph.invoke({
                 "messages": [HumanMessage(content=question)],
                 "question": "",
@@ -356,37 +280,56 @@ def build_phase5_graph(llm: ChatGroq, phase4_graph: Any) -> Any:
                 "retry_count": 0,
             })
     """
-    # Build node functions from factories.
-    phase4_retrieve_fn = _build_phase4_retrieve_node(phase4_graph)
+    # ------------------------------------------------------------------
+    # Phase 4 — ReAct retrieval agent (internal, not returned)
+    # ------------------------------------------------------------------
+    llm_with_tools = llm.bind_tools(TOOL_REGISTRY)
+    logger.info("[Phase4] LLM bound with tools: %s", [t.name for t in TOOL_REGISTRY])
+
+    agent_node_fn = build_agent_node(llm_with_tools)
+    tool_node = ToolNode(TOOL_REGISTRY)
+
+    phase4_graph = StateGraph(Phase4AgentState)
+    phase4_graph.add_node("agent_node", agent_node_fn)
+    phase4_graph.add_node("tool_node", tool_node)
+    phase4_graph.add_edge(START, "agent_node")
+    phase4_graph.add_conditional_edges(
+        "agent_node",
+        _should_continue,
+        {"tool_node": "tool_node", "__end__": END},
+    )
+    phase4_graph.add_edge("tool_node", "agent_node")
+
+    compiled_phase4 = phase4_graph.compile()
+    
+    logger.info("[Phase4] ReAct graph compiled.")
+
+    # ------------------------------------------------------------------
+    # Phase 5 — Self-RAG verification wrapper (returned to caller)
+    # ------------------------------------------------------------------
+    phase4_retrieve_fn = _build_phase4_retrieve_node(compiled_phase4)
     generate_fn = build_generate_node(llm)
     verify_fn = build_verifier_node(llm)
     regenerate_fn = build_regenerate_node(llm)
 
-    # Assemble graph.
-    graph = StateGraph(Phase5AgentState)
+    phase5_graph = StateGraph(Phase5AgentState)
+    phase5_graph.add_node("extract_question_node", _extract_question_node)
+    phase5_graph.add_node("phase4_retrieve_node", phase4_retrieve_fn)
+    phase5_graph.add_node("generate_node", generate_fn)
+    phase5_graph.add_node("verify_node", verify_fn)
+    phase5_graph.add_node("regenerate_node", regenerate_fn)
 
-    graph.add_node("extract_question_node", _extract_question_node)
-    graph.add_node("phase4_retrieve_node", phase4_retrieve_fn)
-    graph.add_node("generate_node", generate_fn)
-    graph.add_node("verify_node", verify_fn)
-    graph.add_node("regenerate_node", regenerate_fn)
-
-    # Linear entry path.
-    graph.add_edge(START, "extract_question_node")
-    graph.add_edge("extract_question_node", "phase4_retrieve_node")
-    graph.add_edge("phase4_retrieve_node", "generate_node")
-    graph.add_edge("generate_node", "verify_node")
-
-    # Verification decision point.
-    graph.add_conditional_edges(
+    phase5_graph.add_edge(START, "extract_question_node")
+    phase5_graph.add_edge("extract_question_node", "phase4_retrieve_node")
+    phase5_graph.add_edge("phase4_retrieve_node", "generate_node")
+    phase5_graph.add_edge("generate_node", "verify_node")
+    phase5_graph.add_conditional_edges(
         "verify_node",
         _should_regenerate,
         {"regenerate_node": "regenerate_node", "__end__": END},
     )
+    phase5_graph.add_edge("regenerate_node", "verify_node")
 
-    # Regeneration always feeds back to verification.
-    graph.add_edge("regenerate_node", "verify_node")
-
-    compiled = graph.compile()
+    compiled_phase5 = phase5_graph.compile()
     logger.info("[Phase5] Self-RAG graph compiled successfully.")
-    return compiled
+    return compiled_phase5

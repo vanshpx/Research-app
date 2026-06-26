@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
-from app.retrievers.graph_builder import build_graph, build_phase5_graph
+from app.retrievers.graph_builder import build_graph
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -57,12 +57,9 @@ def _get_graph() -> Any:
             reasoning_effort="none",   # disable thinking chain for tool-call reliability
         )
 
-        logger.info("[react_agent] Building Phase 4 retrieval graph...")
-        phase4_graph = build_graph(llm)
-
-        logger.info("[react_agent] Building Phase 5 Self-RAG graph...")
-        _graph = build_phase5_graph(llm, phase4_graph)
-        logger.info("[react_agent] Phase 5 graph ready.")
+        logger.info("[react_agent] Building full RAG graph (Phase 4 + Phase 5)...")
+        _graph = build_graph(llm)
+        logger.info("[react_agent] Graph ready.")
     return _graph
 
 
@@ -83,6 +80,7 @@ def run_agent(question: str) -> tuple[str, list[dict]]:
 
     Args:
         question: Natural-language question from the user.
+
 
     Returns:
         Tuple of:

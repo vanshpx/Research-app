@@ -22,6 +22,7 @@ from app.models.schemas import (
     HealthResponse,
 )
 
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
